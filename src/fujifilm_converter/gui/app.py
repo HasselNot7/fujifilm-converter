@@ -79,7 +79,9 @@ from .style import StyleSheet
 from .worker import Worker
 
 APP_TITLE = "Fujifilm Converter"
-APP_ICON = ":/qfluentwidgets/images/logo.png"
+
+_APP_ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resource", "images", "app.png")
+APP_ICON = _APP_ICON_PATH if os.path.isfile(_APP_ICON_PATH) else ":/qfluentwidgets/images/logo.png"
 
 
 class AppConfig(QConfig):

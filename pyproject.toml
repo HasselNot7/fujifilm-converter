@@ -42,7 +42,7 @@ gui = ["PySide6>=6.5", "PySide6-Fluent-Widgets>=1.5.0"]
 where = ["src"]
 
 [tool.setuptools.package-data]
-"fujifilm_converter.gui" = ["resource/qss/*/*.qss"]
+"fujifilm_converter.gui" = ["resource/qss/*/*.qss", "resource/images/*"]
 
 [project.urls]
 Homepage = "https://github.com/zintrulcre/fujifilm-converter"
