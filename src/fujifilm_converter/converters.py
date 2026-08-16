@@ -534,6 +534,10 @@ def convert_raw_to_dng(raw_path: str, converter_type: str, converter_path: str, 
 
     if os.path.isfile(expected):
         return expected
+    for ext in (".DNG",):
+        candidate = os.path.join(output_dir, base + ext)
+        if os.path.isfile(candidate):
+            return candidate
     dng_path = find_converted_dng(raw_path)
     if not dng_path:
         raise RuntimeError(f"DNG output not found for {raw_path}")
