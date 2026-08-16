@@ -32,6 +32,12 @@ python3 -m pip install -e ".[gui]"   # 额外安装 PySide6 + PySide6-Fluent-Wid
 fuji-convert-gui                      # 启动图形界面（或 python -m fujifilm_converter.gui）
 ```
 
+界面截图：
+
+| 转换页（深色） | 转换页（深色） | 工具安装页（浅色） | 工具安装页（浅色） |
+| --- | --- | --- | --- |
+| ![转换页深色](./resources/gui-convert-dark-1.png) | ![转换页深色](./resources/gui-convert-dark-2.png) | ![工具安装页浅色](./resources/gui-tool-light-1.png) | ![工具安装页浅色](./resources/gui-tool-light-2.png) |
+
 ### 3. Docker 执行
 
 ```sh

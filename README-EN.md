@@ -35,6 +35,12 @@ python3 -m pip install -e ".[gui]"   # also installs PySide6 + PySide6-Fluent-Wi
 fuji-convert-gui                      # launch the GUI (or python -m fujifilm_converter.gui)
 ```
 
+Screenshots:
+
+| Convert page (dark) | Convert page (dark) | Install tools page (light) | Install tools page (light) |
+| --- | --- | --- | --- |
+| ![Convert dark](./resources/gui-convert-dark-1.png) | ![Convert dark](./resources/gui-convert-dark-2.png) | ![Install tools](./resources/gui-tool-light-1.png) | ![Install tools](./resources/gui-tool-light-2.png) |
+
 ### 3. Docker
 
 Use this if you do not want to install Python dependencies on the host. The image includes ExifTool and dnglab.
