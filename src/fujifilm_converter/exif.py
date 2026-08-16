@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 from typing import Iterable, Optional
 
-from .converters import find_executable, run_command
+from .converters import find_exiftool, run_command
 from .archiving import archive_exif_backup
 from .cameras import get_camera, format_camera_info
 from . import log
@@ -35,7 +35,7 @@ def update_exif(
     """
     cam = get_camera(preset=preset, make=make, model=model, uniquecameramodel=uniquecameramodel)
 
-    exiftool = find_executable("exiftool")
+    exiftool = find_exiftool()
     if not exiftool:
         raise RuntimeError("exiftool not found. Install it from https://exiftool.org/")
 

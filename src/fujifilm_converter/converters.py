@@ -70,6 +70,33 @@ def find_executable(name: str) -> Optional[str]:
     return None
 
 
+EXIFTOOL_ENV = "FUJIFILM_EXIFTOOL"
+DNGLAB_ENV = "FUJIFILM_DNGLAB"
+
+
+def is_valid_exiftool(path: str) -> bool:
+    """True when the file can be used as exiftool (Windows needs exiftool_files beside it)."""
+    return bool(path) and os.path.isfile(path) and _exiftool_install_valid(path)
+
+
+def is_valid_dnglab(path: str) -> bool:
+    return bool(path) and os.path.isfile(path)
+
+
+def env_exiftool() -> Optional[str]:
+    value = os.environ.get(EXIFTOOL_ENV)
+    if is_valid_exiftool(value or ""):
+        return value
+    return None
+
+
+def env_dnglab() -> Optional[str]:
+    value = os.environ.get(DNGLAB_ENV)
+    if is_valid_dnglab(value or ""):
+        return value
+    return None
+
+
 def find_adobe_dng_converter() -> Optional[str]:
     custom = os.environ.get("ADOBE_DNG_CONVERTER")
     if custom and os.path.isfile(custom):
@@ -84,6 +111,10 @@ def find_adobe_dng_converter() -> Optional[str]:
 
 def find_dng_converter() -> Tuple[Optional[str], Optional[str]]:
     """Return (converter_type, path) or (None, None)."""
+    custom = env_dnglab()
+    if custom:
+        return ("dnglab", custom)
+
     adobe = find_adobe_dng_converter()
     if adobe:
         return ("adobe", adobe)
@@ -185,7 +216,7 @@ def _ensure_dnglab() -> Optional[str]:
 
 
 def find_dnglab() -> Optional[str]:
-    return find_executable("dnglab") or _cached_dnglab()
+    return env_dnglab() or find_executable("dnglab") or _cached_dnglab()
 
 
 def _download_file(url: str, dest: str) -> None:
@@ -241,12 +272,24 @@ def exiftool_binary_path() -> str:
     return os.path.join(cache_dir(), "exiftool", "exiftool" + (".exe" if os.name == "nt" else ""))
 
 
+def _exiftool_install_valid(path: str) -> bool:
+    """On Windows the exe needs its exiftool_files support dir beside it."""
+    if os.name != "nt":
+        return True
+    return os.path.isdir(os.path.join(os.path.dirname(path), "exiftool_files"))
+
+
 def find_exiftool() -> Optional[str]:
+    custom = env_exiftool()
+    if custom:
+        return custom
     found = find_executable("exiftool")
-    if found:
+    if found and _exiftool_install_valid(found):
         return found
     cached = exiftool_binary_path()
-    return cached if os.path.isfile(cached) else None
+    if os.path.isfile(cached) and _exiftool_install_valid(cached):
+        return cached
+    return None
 
 
 def _latest_exiftool_version() -> Optional[str]:
@@ -266,24 +309,46 @@ def _install_exiftool_windows() -> str:
     archive = os.path.join(cache_dir(), f"exiftool-{version}_64.zip")
     _download_file(url, archive)
 
-    extract_dir = os.path.join(cache_dir(), "exiftool")
-    os.makedirs(extract_dir, exist_ok=True)
+    tmp_dir = os.path.join(cache_dir(), "exiftool_extract_tmp")
+    if os.path.isdir(tmp_dir):
+        shutil.rmtree(tmp_dir)
+    os.makedirs(tmp_dir, exist_ok=True)
+
     try:
         with zipfile.ZipFile(archive) as zf:
-            zf.extractall(extract_dir)
+            zf.extractall(tmp_dir)
     finally:
         os.remove(archive)
 
-    bin_path = exiftool_binary_path()
-    if not os.path.isfile(bin_path):
-        for root, _, files in os.walk(extract_dir):
+    # The zip nests everything under a top-level folder. The exe must sit
+    # next to its exiftool_files support directory, so move both together.
+    exe_src = None
+    files_src = None
+    for root, dirs, files in os.walk(tmp_dir):
+        if exe_src is None:
             for name in files:
                 if name.lower().startswith("exiftool") and name.lower().endswith(".exe"):
-                    src = os.path.join(root, name)
-                    os.rename(src, bin_path)
+                    exe_src = os.path.join(root, name)
                     break
-    if not os.path.isfile(bin_path):
-        raise RuntimeError("下载内容中未找到 exiftool 可执行文件")
+        if files_src is None and "exiftool_files" in dirs:
+            files_src = os.path.join(root, "exiftool_files")
+        if exe_src and files_src:
+            break
+
+    if exe_src is None or files_src is None:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise RuntimeError("下载内容中未找到 exiftool 可执行文件或 exiftool_files 目录")
+
+    extract_dir = os.path.join(cache_dir(), "exiftool")
+    if os.path.isdir(extract_dir):
+        shutil.rmtree(extract_dir)
+    os.makedirs(extract_dir)
+
+    bin_path = exiftool_binary_path()
+    shutil.move(exe_src, bin_path)
+    shutil.move(files_src, os.path.join(extract_dir, "exiftool_files"))
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+
     log.info(f"exiftool installed to {bin_path}")
     return bin_path
 
@@ -384,6 +449,34 @@ def ensure_dir(path: str) -> None:
         os.makedirs(path)
 
 
+def cached_exiftool_install() -> Optional[str]:
+    """Return the cache-managed exiftool directory if present (valid or not)."""
+    target = os.path.join(cache_dir(), "exiftool")
+    if os.path.exists(target):
+        return target
+    return None
+
+
+def uninstall_exiftool() -> str:
+    """Remove the cache-managed portable exiftool install. System installs are untouched."""
+    target = os.path.join(cache_dir(), "exiftool")
+    if os.path.isdir(target):
+        shutil.rmtree(target, ignore_errors=True)
+    elif os.path.isfile(target):
+        os.remove(target)
+    log.info(f"exiftool 已卸载：{target}")
+    return target
+
+
+def uninstall_dnglab() -> str:
+    """Remove the cache-managed portable dnglab binary. System installs are untouched."""
+    bin_path = os.path.join(cache_dir(), "dnglab" + (".exe" if os.name == "nt" else ""))
+    if os.path.isfile(bin_path):
+        os.remove(bin_path)
+    log.info(f"dnglab 已卸载：{bin_path}")
+    return bin_path
+
+
 def run_command(command: list[str], label: str) -> subprocess.CompletedProcess:
     """Run a command, stream its output through log.info, raise on failure."""
     log.info(f"[{label}] {' '.join(command)}")
@@ -441,7 +534,7 @@ def convert_raw_to_dng(raw_path: str, converter_type: str, converter_path: str) 
 
 def print_converter_status() -> None:
     converter_type, converter_path = find_dng_converter()
-    exiftool = find_executable("exiftool")
+    exiftool = find_exiftool()
     log.info(f"exiftool: {'found' if exiftool else 'missing (install from https://exiftool.org/ or brew/apt)'}")
     if converter_path:
         log.info(f"RAW converter: {converter_type} ({converter_path})")

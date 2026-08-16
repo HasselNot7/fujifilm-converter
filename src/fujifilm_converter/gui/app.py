@@ -14,15 +14,20 @@ import platform
 import sys
 from typing import List, Optional
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QIcon
-from PySide6.QtWidgets import QApplication, QFileDialog, QFrame, QHBoxLayout, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QMenu, QVBoxLayout, QWidget
+
+import shiboken6
+
+from qfluentwidgets.common.config import QConfig
 
 from qfluentwidgets import (
     BodyLabel,
     CaptionLabel,
     CardWidget,
     ComboBox,
+    ConfigItem,
     FluentIcon,
     HeaderCardWidget,
     IconWidget,
@@ -52,19 +57,40 @@ from qfluentwidgets import (
 
 from ..cameras import list_presets
 from ..converters import (
+    DNGLAB_ENV,
+    EXIFTOOL_ENV,
+    _cached_dnglab,
+    cached_exiftool_install,
     cache_dir,
     find_adobe_dng_converter,
     find_dnglab,
     find_exiftool,
     install_dnglab,
     install_exiftool,
+    is_valid_dnglab,
+    is_valid_exiftool,
+    uninstall_dnglab,
+    uninstall_exiftool,
 )
 from ..core import collect_input_paths, process_inputs, print_status
+from .i18n import t, tr
 from .style import StyleSheet
 from .worker import Worker
 
 APP_TITLE = "Fujifilm Converter"
 APP_ICON = ":/qfluentwidgets/images/logo.png"
+
+
+class AppConfig(QConfig):
+    """Application settings persisted through qconfig (class attributes only)."""
+
+    lastDialogDir = ConfigItem("General", "lastDialogDir", "")
+    exiftoolPath = ConfigItem("General", "exiftoolPath", "")
+    dnglabPath = ConfigItem("General", "dnglabPath", "")
+    language = ConfigItem("General", "language", "zh")
+
+
+app_cfg = AppConfig()
 
 
 class PageHeader(QWidget):
@@ -99,6 +125,10 @@ class PageHeader(QWidget):
         """Add an action button to the right side of the header."""
         self.buttonLayout.addWidget(button)
 
+    def set_texts(self, title: str, subtitle: str) -> None:
+        self.titleLabel.setText(title)
+        self.subtitleLabel.setText(subtitle)
+
 
 class InterfaceBase(ScrollArea):
     """Gallery-style scroll page: fixed header on top, scrolling card content."""
@@ -131,6 +161,14 @@ class InterfaceBase(ScrollArea):
             self._headerHeight = height
             self.setViewportMargins(0, height, 0, 0)
         self.header.raise_()
+        self._place_state()
+
+    def _place_state(self) -> None:
+        """Keep the state tooltip anchored at the top-right, below the header."""
+        tip = getattr(self, "_stateToolTip", None)
+        if tip is not None and shiboken6.isValid(tip) and tip.isVisible():
+            x = max(0, self.width() - tip.width() - 24)
+            tip.move(x, self.header.height() + 8)
 
 
 class InputCard(HeaderCardWidget):
@@ -138,17 +176,16 @@ class InputCard(HeaderCardWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setTitle("输入文件 / 文件夹")
         self.setBorderRadius(8)
 
         self.countBadge = InfoBadge.info(0, self)
         self.listWidget = ListWidget(self)
         self.listPanel = QFrame(self)
         self.listPanel.setObjectName("listPanel")
-        self.addFileButton = PushButton("添加文件", self, FluentIcon.DOCUMENT)
-        self.addFolderButton = PushButton("添加文件夹", self, FluentIcon.FOLDER)
-        self.removeButton = PushButton("移除选中", self)
-        self.clearButton = PushButton("清空", self)
+        self.addFileButton = PushButton("", self, FluentIcon.DOCUMENT)
+        self.addFolderButton = PushButton("", self, FluentIcon.FOLDER)
+        self.removeButton = PushButton("", self)
+        self.clearButton = PushButton("", self)
 
         panelLayout = QVBoxLayout(self.listPanel)
         panelLayout.setContentsMargins(2, 2, 2, 2)
@@ -179,6 +216,14 @@ class InputCard(HeaderCardWidget):
         self.clearButton.clicked.connect(self._clear)
         self.listWidget.model().rowsInserted.connect(self._update_count)
         self.listWidget.model().rowsRemoved.connect(self._update_count)
+        self.apply_language()
+
+    def apply_language(self) -> None:
+        self.setTitle(tr("input_title"))
+        self.addFileButton.setText(tr("btn_add_files"))
+        self.addFolderButton.setText(tr("btn_add_folder"))
+        self.removeButton.setText(tr("btn_remove_selected"))
+        self.clearButton.setText(tr("btn_clear"))
 
     def _update_count(self) -> None:
         self.countBadge.setText(str(self.listWidget.count()))
@@ -187,17 +232,26 @@ class InputCard(HeaderCardWidget):
         self.listWidget.clear()
 
     def _add_files(self) -> None:
+        start_dir = qconfig.get(app_cfg.lastDialogDir)
+        if start_dir and not os.path.isdir(start_dir):
+            start_dir = ""
         paths, _ = QFileDialog.getOpenFileNames(
             self.window(),
-            "选择 RAW / DNG 文件",
-            "",
-            "RAW / DNG 文件 (*.arw *.cr2 *.cr3 *.nef *.nrw *.raf *.orf *.rw2 *.pef *.srw *.dng *.raw *.rwl *.3fr *.iiq *.mef *.mrw *.erf *.kdc *.dcr *.gpr);;所有文件 (*.*)",
+            tr("dlg_open_files"),
+            start_dir,
+            tr("dlg_file_filter"),
         )
+        if paths:
+            qconfig.set(app_cfg.lastDialogDir, os.path.dirname(paths[0]))
         self._add_paths(paths)
 
     def _add_folder(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self.window(), "选择照片目录")
+        start_dir = qconfig.get(app_cfg.lastDialogDir)
+        if start_dir and not os.path.isdir(start_dir):
+            start_dir = ""
+        folder = QFileDialog.getExistingDirectory(self.window(), tr("dlg_open_folder"), start_dir)
         if folder:
+            qconfig.set(app_cfg.lastDialogDir, folder)
             self._add_paths([folder])
 
     def _add_paths(self, paths: List[str]) -> None:
@@ -219,7 +273,6 @@ class CameraCard(HeaderCardWidget):
 
     def __init__(self, presets: List[str], parent=None):
         super().__init__(parent)
-        self.setTitle("相机身份")
         self.setBorderRadius(8)
 
         self.presetCombo = ComboBox(self)
@@ -232,51 +285,60 @@ class CameraCard(HeaderCardWidget):
         self.modelEdit = LineEdit(self)
         self.ucmEdit = LineEdit(self)
 
-        self.makeEdit.setPlaceholderText("Make（如 FUJIFILM）")
-        self.modelEdit.setPlaceholderText("Model（如 GFX100II）")
-        self.ucmEdit.setPlaceholderText("UniqueCameraModel（如 Fujifilm GFX 100 II）")
         self.makeEdit.setClearButtonEnabled(True)
         self.modelEdit.setClearButtonEnabled(True)
         self.ucmEdit.setClearButtonEnabled(True)
 
+        self.presetLabel = StrongBodyLabel(self)
         presetRow = QHBoxLayout()
         presetRow.setContentsMargins(0, 0, 0, 0)
         presetRow.setSpacing(12)
-        presetRow.addWidget(StrongBodyLabel("预设", self))
+        presetRow.addWidget(self.presetLabel)
         presetRow.addWidget(self.presetCombo, 1)
         presetRow.addStretch(1)
 
-        hint = CaptionLabel("选择 Lightroom 已支持的预设，多数情况默认 fuji 即可解锁富士胶片模拟", self)
-        hint.setTextColor(QColor(96, 96, 96), QColor(216, 216, 216))
-        hint.setWordWrap(True)
+        self.presetHint = CaptionLabel(self)
+        self.presetHint.setTextColor(QColor(96, 96, 96), QColor(216, 216, 216))
+        self.presetHint.setWordWrap(True)
 
+        self.customLabel = StrongBodyLabel(self)
         customRow = QHBoxLayout()
         customRow.setContentsMargins(0, 0, 0, 0)
         customRow.setSpacing(12)
-        customRow.addWidget(StrongBodyLabel("自定义相机身份", self))
+        customRow.addWidget(self.customLabel)
         customRow.addStretch(1)
         customRow.addWidget(self.customSwitch)
 
-        customHint = CaptionLabel("需要完整填写 Make、Model、UniqueCameraModel 三项", self)
-        customHint.setTextColor(QColor(96, 96, 96), QColor(216, 216, 216))
-        customHint.setWordWrap(True)
-        customHint.setVisible(False)
+        self._customHint = CaptionLabel(self)
+        self._customHint.setTextColor(QColor(96, 96, 96), QColor(216, 216, 216))
+        self._customHint.setWordWrap(True)
+        self._customHint.setVisible(False)
 
         contentLayout = QVBoxLayout()
         contentLayout.setContentsMargins(0, 0, 0, 0)
         contentLayout.setSpacing(10)
         contentLayout.addLayout(presetRow)
-        contentLayout.addWidget(hint)
+        contentLayout.addWidget(self.presetHint)
         contentLayout.addLayout(customRow)
-        contentLayout.addWidget(customHint)
+        contentLayout.addWidget(self._customHint)
         contentLayout.addWidget(self.makeEdit)
         contentLayout.addWidget(self.modelEdit)
         contentLayout.addWidget(self.ucmEdit)
         self.viewLayout.addLayout(contentLayout, 1)
 
-        self._customHint = customHint
         self._update_custom_enabled(False)
         self.customSwitch.checkedChanged.connect(self._update_custom_enabled)
+        self.apply_language()
+
+    def apply_language(self) -> None:
+        self.setTitle(tr("camera_title"))
+        self.presetLabel.setText(tr("label_preset"))
+        self.presetHint.setText(tr("hint_preset"))
+        self.customLabel.setText(tr("label_custom"))
+        self._customHint.setText(tr("hint_custom"))
+        self.makeEdit.setPlaceholderText(tr("ph_make"))
+        self.modelEdit.setPlaceholderText(tr("ph_model"))
+        self.ucmEdit.setPlaceholderText(tr("ph_ucm"))
 
     def _update_custom_enabled(self, enabled: bool) -> None:
         self.makeEdit.setEnabled(enabled)
@@ -302,7 +364,6 @@ class OptionCard(HeaderCardWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setTitle("转换选项")
         self.setBorderRadius(8)
 
         self.archiveSwitch = SwitchButton(self)
@@ -312,34 +373,38 @@ class OptionCard(HeaderCardWidget):
 
         self.archiveSwitch.setChecked(True)
         self.archiveDirEdit.setText("originals")
-        self.archiveDirEdit.setPlaceholderText("归档目录名（默认 originals）")
         self.archiveDirEdit.setMinimumWidth(140)
         self.archiveDirEdit.setClearButtonEnabled(True)
         self._contentLayout = None
+        self._rows = []
 
-        self._add_row("转换后归档原始 RAW", "原始照片会移动到归档目录", self.archiveSwitch, self.archiveDirEdit, "归档目录：")
-        self._add_row("跳过 RAW→DNG 转换", "输入文件必须已经是 DNG", self.skipSwitch, None, None)
-        self._add_row("保留 exiftool 备份文件", "会额外生成 *_original 文件", self.backupSwitch, None, None)
+        self._add_row("opt_archive", "opt_archive_desc", self.archiveSwitch, self.archiveDirEdit, "label_archive_dir")
+        self._add_row("opt_skip", "opt_skip_desc", self.skipSwitch, None, None)
+        self._add_row("opt_backup", "opt_backup_desc", self.backupSwitch, None, None)
 
         self.archiveSwitch.checkedChanged.connect(self.archiveDirEdit.setEnabled)
         self.archiveDirEdit.setEnabled(self.archiveSwitch.isChecked())
+        self.apply_language()
 
-    def _add_row(self, title: str, description: str, switch: SwitchButton, extra: Optional[LineEdit], extraLabel: Optional[str]) -> None:
+    def _add_row(self, titleKey: str, descKey: str, switch: SwitchButton, extra: Optional[LineEdit], extraLabelKey: Optional[str]) -> None:
         labelLayout = QVBoxLayout()
         labelLayout.setContentsMargins(0, 0, 0, 0)
         labelLayout.setSpacing(2)
-        labelLayout.addWidget(StrongBodyLabel(title, self))
-        desc = CaptionLabel(description, self)
-        desc.setTextColor(QColor(96, 96, 96), QColor(216, 216, 216))
-        desc.setWordWrap(True)
-        labelLayout.addWidget(desc)
+        titleLabel = StrongBodyLabel(tr(titleKey), self)
+        descLabel = CaptionLabel(tr(descKey), self)
+        descLabel.setTextColor(QColor(96, 96, 96), QColor(216, 216, 216))
+        descLabel.setWordWrap(True)
+        labelLayout.addWidget(titleLabel)
+        labelLayout.addWidget(descLabel)
 
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(12)
         row.addLayout(labelLayout, 1)
-        if extra is not None and extraLabel:
-            row.addWidget(CaptionLabel(extraLabel, self))
+        extraLabel = None
+        if extra is not None and extraLabelKey:
+            extraLabel = CaptionLabel(tr(extraLabelKey), self)
+            row.addWidget(extraLabel)
             row.addWidget(extra)
         row.addWidget(switch)
 
@@ -349,6 +414,16 @@ class OptionCard(HeaderCardWidget):
             self._contentLayout.setSpacing(14)
             self.viewLayout.addLayout(self._contentLayout, 1)
         self._contentLayout.addLayout(row)
+        self._rows.append((titleKey, descKey, extraLabelKey, titleLabel, descLabel, extraLabel))
+
+    def apply_language(self) -> None:
+        self.setTitle(tr("options_title"))
+        self.archiveDirEdit.setPlaceholderText(tr("ph_archive_dir"))
+        for titleKey, descKey, extraLabelKey, titleLabel, descLabel, extraLabel in self._rows:
+            titleLabel.setText(tr(titleKey))
+            descLabel.setText(tr(descKey))
+            if extraLabel is not None:
+                extraLabel.setText(tr(extraLabelKey))
 
 
 class ConvertInterface(InterfaceBase):
@@ -357,8 +432,8 @@ class ConvertInterface(InterfaceBase):
     def __init__(self, parent=None):
         super().__init__(
             "convertInterface",
-            "照片转换",
-            "把任意相机的 RAW/DNG 照片处理成 Lightroom 能识别的富士机型，解锁胶片模拟",
+            tr("convert_title"),
+            tr("convert_subtitle"),
             parent,
         )
 
@@ -368,28 +443,27 @@ class ConvertInterface(InterfaceBase):
         self.logBrowser = TextBrowser(self)
         self.logBrowser.setObjectName("logBrowser")
         self.progressBar = ProgressBar(self)
-        self.checkButton = PushButton("检测外部工具", self, FluentIcon.ROBOT)
-        self.startButton = PrimaryPushButton("开始转换", self, FluentIcon.PLAY)
+        self.checkButton = PushButton("", self, FluentIcon.ROBOT)
+        self.startButton = PrimaryPushButton("", self, FluentIcon.PLAY)
 
         self.header.addActionButton(self.checkButton)
         self.header.addActionButton(self.startButton)
         self.progressBar.setRange(0, 100)
         self.progressBar.setValue(0)
 
-        logCard = HeaderCardWidget(self)
-        logCard.setTitle("运行日志")
-        logCard.setBorderRadius(8)
+        self._logCard = HeaderCardWidget(self)
+        self._logCard.setBorderRadius(8)
         logContent = QVBoxLayout()
         logContent.setContentsMargins(0, 0, 0, 0)
         logContent.setSpacing(12)
         logContent.addWidget(self.logBrowser, 1)
         logContent.addWidget(self.progressBar)
-        logCard.viewLayout.addLayout(logContent, 1)
+        self._logCard.viewLayout.addLayout(logContent, 1)
 
         self.vBoxLayout.addWidget(self.inputCard)
         self.vBoxLayout.addWidget(self.cameraCard)
         self.vBoxLayout.addWidget(self.optionCard)
-        self.vBoxLayout.addWidget(logCard, 1)
+        self.vBoxLayout.addWidget(self._logCard, 1)
 
         StyleSheet.CONVERT_INTERFACE.apply(self)
 
@@ -402,33 +476,48 @@ class ConvertInterface(InterfaceBase):
         self._done = 0
         self._stateToolTip: Optional[StateToolTip] = None
 
+        self.apply_language()
+
+    def apply_language(self) -> None:
+        self.header.set_texts(tr("convert_title"), tr("convert_subtitle"))
+        self.checkButton.setText(tr("btn_check_tools"))
+        self.startButton.setText(tr("btn_processing") if not self.startButton.isEnabled() else tr("btn_start"))
+        self._logCard.setTitle(tr("log_title"))
+        self.inputCard.apply_language()
+        self.cameraCard.apply_language()
+        self.optionCard.apply_language()
+
     def _show_info(self, content: str, level: str = "info") -> None:
         parent = self.window() or self
         if level == "success":
-            InfoBar.success("提示", content, isClosable=True, duration=4000, position=InfoBarPosition.BOTTOM_RIGHT, parent=parent)
+            InfoBar.success(tr("info_title"), content, isClosable=True, duration=4000, position=InfoBarPosition.BOTTOM_RIGHT, parent=parent)
         elif level == "warning":
-            InfoBar.warning("提示", content, isClosable=True, duration=5000, position=InfoBarPosition.BOTTOM_RIGHT, parent=parent)
+            InfoBar.warning(tr("info_title"), content, isClosable=True, duration=5000, position=InfoBarPosition.BOTTOM_RIGHT, parent=parent)
         else:
-            InfoBar.error("错误", content, isClosable=True, duration=6000, position=InfoBarPosition.BOTTOM_RIGHT, parent=parent)
+            InfoBar.error(tr("error_title"), content, isClosable=True, duration=6000, position=InfoBarPosition.BOTTOM_RIGHT, parent=parent)
 
     def _show_state(self, title: str, content: str) -> None:
-        if self._stateToolTip is None:
+        if self._stateToolTip is None or not shiboken6.isValid(self._stateToolTip):
             self._stateToolTip = StateToolTip(title, content, self)
-            self._stateToolTip.move(max(0, (self.width() - 360) // 2), self.header.height() + 8)
+            self._stateToolTip.destroyed.connect(self._on_state_destroyed)
         else:
             self._stateToolTip.setTitle(title)
             self._stateToolTip.setContent(content)
             self._stateToolTip.setState(False)
         self._stateToolTip.show()
+        self._place_state()
+
+    def _on_state_destroyed(self) -> None:
+        self._stateToolTip = None
 
     def _hide_state(self) -> None:
-        if self._stateToolTip is not None:
+        if self._stateToolTip is not None and shiboken6.isValid(self._stateToolTip):
             self._stateToolTip.hide()
 
     def _set_running(self, running: bool) -> None:
         self.checkButton.setEnabled(not running)
         self.startButton.setEnabled(not running)
-        self.startButton.setText("处理中…" if running else "开始转换")
+        self.startButton.setText(tr("btn_processing") if running else tr("btn_start"))
         self.progressBar.setValue(0)
         self._done = 0
 
@@ -440,11 +529,11 @@ class ConvertInterface(InterfaceBase):
 
     def _validate(self):
         if not self.inputCard.paths():
-            self._show_info("请先添加输入文件或文件夹。", "warning")
+            self._show_info(tr("warn_no_inputs"), "warning")
             return None
         preset, make, model, ucm = self._camera_args()
         if (make or model or ucm) and not (make and model and ucm):
-            self._show_info("自定义相机身份需要完整填写 Make、Model、UniqueCameraModel 三项。", "warning")
+            self._show_info(tr("warn_custom_incomplete"), "warning")
             return None
         try:
             files = self._collect_inputs()
@@ -452,7 +541,7 @@ class ConvertInterface(InterfaceBase):
             self._show_info(str(exc), "warning")
             return None
         if not files:
-            self._show_info("没有找到支持的 RAW / DNG 文件。", "warning")
+            self._show_info(tr("warn_no_supported"), "warning")
             return None
         return preset, make, model, ucm, files
 
@@ -468,8 +557,8 @@ class ConvertInterface(InterfaceBase):
         self._check_mode = False
         self._set_running(True)
         self.logBrowser.clear()
-        self.logBrowser.append(f"共发现 {self._total} 个文件，开始处理…")
-        self._show_state("正在转换", f"共 {self._total} 个文件，开始处理…")
+        self.logBrowser.append(tr("log_found_files", n=self._total))
+        self._show_state(tr("state_converting"), tr("log_found_files", n=self._total))
 
         self._worker = Worker(
             process_inputs,
@@ -492,8 +581,8 @@ class ConvertInterface(InterfaceBase):
         self._total = 0
         self._set_running(True)
         self.logBrowser.clear()
-        self.logBrowser.append("检测外部工具…")
-        self._show_state("检测外部工具", "正在检查 exiftool 与 RAW 转换器…")
+        self.logBrowser.append(tr("state_checking"))
+        self._show_state(tr("state_checking"), tr("state_checking_content"))
         self._worker = Worker(print_status)
         self._connect_worker()
 
@@ -509,44 +598,55 @@ class ConvertInterface(InterfaceBase):
             self._done += 1
             self.progressBar.setValue(int(self._done * 100 / self._total))
             if self._stateToolTip is not None:
-                self._stateToolTip.setContent(f"已处理 {self._done} / {self._total} 个文件")
+                self._stateToolTip.setContent(tr("state_processed", done=self._done, total=self._total))
 
     def _on_finished(self, result) -> None:
         self._set_running(False)
         if self._check_mode:
             self._hide_state()
-            self._show_info("工具检测完成，请查看日志。", "success")
+            self._show_info(tr("msg_check_done"), "success")
             return
         count = len(result) if isinstance(result, list) else self._done
         self.progressBar.setValue(100)
-        self.logBrowser.append(f"处理完成，共 {count} 个文件。")
-        if self._stateToolTip is not None:
-            self._stateToolTip.setContent(f"处理完成，共 {count} 个文件")
+        self.logBrowser.append(tr("log_done", n=count))
+        if self._stateToolTip is not None and shiboken6.isValid(self._stateToolTip):
+            self._stateToolTip.setContent(tr("state_done_content", n=count))
             self._stateToolTip.setState(True)
-        QTimer.singleShot(2500, self._hide_state)
-        self._show_info(f"处理完成，共 {count} 个文件。", "success")
+        self._show_info(tr("log_done", n=count), "success")
 
     def _on_failed(self, exc: str) -> None:
         self._set_running(False)
         self._hide_state()
-        self.logBrowser.append(f"错误：{exc}")
+        self.logBrowser.append(tr("log_error", exc=exc))
         self._show_info(exc, "error")
 
 
 class ToolStatusCard(CardWidget):
-    """A single row showing one helper tool's install status and an install button."""
+    """A single row showing one helper tool's install status and install button."""
 
-    def __init__(self, icon, name: str, description: str, parent=None):
+    def __init__(self, icon, name: str, descKey: str, parent=None):
         super().__init__(parent)
+        self._descKey = descKey
         self.iconWidget = IconWidget(icon, self)
         self.titleLabel = StrongBodyLabel(name, self)
-        self.descriptionLabel = CaptionLabel(description, self)
-        self.successBadge = InfoBadge.success("已安装", self)
-        self.errorBadge = InfoBadge.error("未安装", self)
-        self.statusLabel = CaptionLabel("未检测", self)
-        self.installButton = PrimaryPushButton("安装", self)
+        self.descriptionLabel = CaptionLabel(self)
+        self.successBadge = InfoBadge.success("", self)
+        self.errorBadge = InfoBadge.error("", self)
+        self.statusLabel = CaptionLabel(self)
+        self.installButton = PrimaryPushButton("", self)
         self.installButton.setIcon(FluentIcon.DOWNLOAD)
-        self.installButton.setFixedWidth(110)
+        self.installButton.setFixedWidth(150)
+        self.uninstallButton = PushButton("", self)
+        self.uninstallButton.setIcon(FluentIcon.DELETE)
+        self.uninstallButton.setFixedWidth(150)
+        self.manualButton = PushButton("", self)
+        self.manualButton.setIcon(FluentIcon.FOLDER)
+        self.manualButton.setFixedWidth(150)
+        self.manualMenu = QMenu(self.manualButton)
+        self.pickAction = self.manualMenu.addAction(tr("menu_pick_path"))
+        self.clearAction = self.manualMenu.addAction(tr("menu_clear_path"))
+        self.clearAction.setEnabled(False)
+        self.manualButton.setMenu(self.manualMenu)
 
         self.iconWidget.setFixedSize(48, 48)
         self.descriptionLabel.setTextColor(QColor(96, 96, 96), QColor(216, 216, 216))
@@ -573,14 +673,33 @@ class ToolStatusCard(CardWidget):
         self.vBoxLayout.addWidget(self.descriptionLabel)
         self.vBoxLayout.addWidget(self.statusLabel)
         self.hBoxLayout.addLayout(self.vBoxLayout, 1)
-        self.hBoxLayout.addWidget(self.installButton, 0, Qt.AlignVCenter)
+        self.buttonLayout = QGridLayout()
+        self.buttonLayout.setContentsMargins(0, 0, 0, 0)
+        self.buttonLayout.setHorizontalSpacing(8)
+        self.buttonLayout.setVerticalSpacing(8)
+        self.buttonLayout.setRowStretch(0, 1)
+        self.buttonLayout.setRowStretch(1, 1)
+        self.buttonLayout.addWidget(self.installButton, 0, 0)
+        self.buttonLayout.addWidget(self.uninstallButton, 0, 1)
+        self.buttonLayout.addWidget(self.manualButton, 1, 0)
+        self.hBoxLayout.addLayout(self.buttonLayout, 0)
 
-    def set_status(self, text: str, installed: bool) -> None:
+    def set_status(self, text: str, installed: bool, uninstallable: bool = False) -> None:
         self.statusLabel.setText(text)
         self.successBadge.setVisible(installed)
         self.errorBadge.setVisible(not installed)
-        self.installButton.setText("已安装" if installed else "安装")
+        self.installButton.setText(tr("badge_installed") if installed else tr("btn_install"))
         self.installButton.setEnabled(not installed)
+        self.uninstallButton.setEnabled(uninstallable)
+
+    def apply_language(self) -> None:
+        self.descriptionLabel.setText(tr(self._descKey))
+        self.successBadge.setText(tr("badge_installed"))
+        self.errorBadge.setText(tr("badge_missing"))
+        self.uninstallButton.setText(tr("btn_uninstall"))
+        self.manualButton.setText(tr("btn_manual"))
+        self.pickAction.setText(tr("menu_pick_path"))
+        self.clearAction.setText(tr("menu_clear_path"))
 
 
 class ToolsInterface(InterfaceBase):
@@ -589,15 +708,15 @@ class ToolsInterface(InterfaceBase):
     def __init__(self, parent=None):
         super().__init__(
             "toolsInterface",
-            "工具安装",
-            "一键自动安装 exiftool 与 dnglab，按当前系统选择对应版本，无需管理员权限",
+            tr("tools_title"),
+            tr("tools_subtitle"),
             parent,
         )
 
-        self.exifCard = ToolStatusCard(FluentIcon.PHOTO, "ExifTool", "读写照片 EXIF 元数据的必需工具", self)
-        self.dnglabCard = ToolStatusCard(FluentIcon.CLOUD_DOWNLOAD, "dnglab", "开源的 RAW→DNG 转换器（便携版）", self)
-        self.refreshButton = PushButton("重新检测", self, FluentIcon.SYNC)
-        self.installAllButton = PrimaryPushButton("全部安装", self, FluentIcon.DOWNLOAD)
+        self.exifCard = ToolStatusCard(FluentIcon.PHOTO, "ExifTool", "exif_desc", self)
+        self.dnglabCard = ToolStatusCard(FluentIcon.CLOUD_DOWNLOAD, "dnglab", "dnglab_desc", self)
+        self.refreshButton = PushButton("", self, FluentIcon.SYNC)
+        self.installAllButton = PrimaryPushButton("", self, FluentIcon.DOWNLOAD)
         self.logBrowser = TextBrowser(self)
         self.logBrowser.setObjectName("logBrowser")
         self.progressBar = ProgressBar(self)
@@ -607,40 +726,41 @@ class ToolsInterface(InterfaceBase):
         self.progressBar.setRange(0, 100)
         self.progressBar.setValue(0)
 
-        installCard = HeaderCardWidget(self)
-        installCard.setTitle("外部工具")
-        installCard.setBorderRadius(8)
-        info = CaptionLabel(
-            f"当前平台：{platform.system()} / {platform.machine()}　·　安装目录：{cache_dir()}",
-            self,
-        )
-        info.setTextColor(QColor(96, 96, 96), QColor(216, 216, 216))
-        info.setWordWrap(True)
+        self._installCard = HeaderCardWidget(self)
+        self._installCard.setBorderRadius(8)
+        self._infoLabel = CaptionLabel(self)
+        self._infoLabel.setTextColor(QColor(96, 96, 96), QColor(216, 216, 216))
+        self._infoLabel.setWordWrap(True)
         installContent = QVBoxLayout()
         installContent.setContentsMargins(0, 0, 0, 0)
         installContent.setSpacing(10)
         installContent.addWidget(self.exifCard)
         installContent.addWidget(self.dnglabCard)
-        installContent.addWidget(info)
-        installCard.viewLayout.addLayout(installContent, 1)
+        installContent.addWidget(self._infoLabel)
+        self._installCard.viewLayout.addLayout(installContent, 1)
 
-        logCard = HeaderCardWidget(self)
-        logCard.setTitle("安装日志")
-        logCard.setBorderRadius(8)
+        self._logCard = HeaderCardWidget(self)
+        self._logCard.setBorderRadius(8)
         logContent = QVBoxLayout()
         logContent.setContentsMargins(0, 0, 0, 0)
         logContent.setSpacing(12)
         logContent.addWidget(self.logBrowser, 1)
         logContent.addWidget(self.progressBar)
-        logCard.viewLayout.addLayout(logContent, 1)
+        self._logCard.viewLayout.addLayout(logContent, 1)
 
-        self.vBoxLayout.addWidget(installCard)
-        self.vBoxLayout.addWidget(logCard, 1)
+        self.vBoxLayout.addWidget(self._installCard)
+        self.vBoxLayout.addWidget(self._logCard, 1)
 
         StyleSheet.TOOLS_INTERFACE.apply(self)
 
         self.exifCard.installButton.clicked.connect(self._install_exiftool)
         self.dnglabCard.installButton.clicked.connect(self._install_dnglab)
+        self.exifCard.uninstallButton.clicked.connect(self._uninstall_exiftool)
+        self.dnglabCard.uninstallButton.clicked.connect(self._uninstall_dnglab)
+        self.exifCard.pickAction.triggered.connect(self._pick_exiftool_path)
+        self.exifCard.clearAction.triggered.connect(self._clear_exiftool_path)
+        self.dnglabCard.pickAction.triggered.connect(self._pick_dnglab_path)
+        self.dnglabCard.clearAction.triggered.connect(self._clear_dnglab_path)
         self.refreshButton.clicked.connect(self._refresh_status)
         self.installAllButton.clicked.connect(self._install_all)
 
@@ -648,29 +768,44 @@ class ToolsInterface(InterfaceBase):
         self._queue: Optional[List[str]] = None
         self._stateToolTip: Optional[StateToolTip] = None
 
+        self.apply_language()
         self._refresh_status()
+
+    def apply_language(self) -> None:
+        self.header.set_texts(tr("tools_title"), tr("tools_subtitle"))
+        self.refreshButton.setText(tr("btn_refresh"))
+        self.installAllButton.setText(tr("btn_install_all"))
+        self._installCard.setTitle(tr("tools_card_title"))
+        self._logCard.setTitle(tr("log_install_title"))
+        self._infoLabel.setText(tr("tools_info", system=platform.system(), machine=platform.machine(), dir=cache_dir()))
+        self.exifCard.apply_language()
+        self.dnglabCard.apply_language()
 
     def _show_info(self, content: str, level: str = "info") -> None:
         parent = self.window() or self
         if level == "success":
-            InfoBar.success("提示", content, isClosable=True, duration=4000, position=InfoBarPosition.BOTTOM_RIGHT, parent=parent)
+            InfoBar.success(tr("info_title"), content, isClosable=True, duration=4000, position=InfoBarPosition.BOTTOM_RIGHT, parent=parent)
         elif level == "warning":
-            InfoBar.warning("提示", content, isClosable=True, duration=5000, position=InfoBarPosition.BOTTOM_RIGHT, parent=parent)
+            InfoBar.warning(tr("info_title"), content, isClosable=True, duration=5000, position=InfoBarPosition.BOTTOM_RIGHT, parent=parent)
         else:
-            InfoBar.error("错误", content, isClosable=True, duration=6000, position=InfoBarPosition.BOTTOM_RIGHT, parent=parent)
+            InfoBar.error(tr("error_title"), content, isClosable=True, duration=6000, position=InfoBarPosition.BOTTOM_RIGHT, parent=parent)
 
     def _show_state(self, title: str, content: str) -> None:
-        if self._stateToolTip is None:
+        if self._stateToolTip is None or not shiboken6.isValid(self._stateToolTip):
             self._stateToolTip = StateToolTip(title, content, self)
-            self._stateToolTip.move(max(0, (self.width() - 360) // 2), self.header.height() + 8)
+            self._stateToolTip.destroyed.connect(self._on_state_destroyed)
         else:
             self._stateToolTip.setTitle(title)
             self._stateToolTip.setContent(content)
             self._stateToolTip.setState(False)
         self._stateToolTip.show()
+        self._place_state()
+
+    def _on_state_destroyed(self) -> None:
+        self._stateToolTip = None
 
     def _hide_state(self) -> None:
-        if self._stateToolTip is not None:
+        if self._stateToolTip is not None and shiboken6.isValid(self._stateToolTip):
             self._stateToolTip.hide()
 
     def _ensure_idle(self) -> bool:
@@ -683,22 +818,44 @@ class ToolsInterface(InterfaceBase):
         self.installAllButton.setEnabled(not running)
         self.exifCard.installButton.setEnabled(not running and find_exiftool() is None)
         self.dnglabCard.installButton.setEnabled(not running and find_dnglab() is None)
+        self.exifCard.uninstallButton.setEnabled(not running and cached_exiftool_install() is not None)
+        self.dnglabCard.uninstallButton.setEnabled(not running and _cached_dnglab() is not None)
+        self.exifCard.manualButton.setEnabled(not running)
+        self.dnglabCard.manualButton.setEnabled(not running)
         self.progressBar.setValue(0)
 
-    def _refresh_status(self) -> None:
-        exif = find_exiftool()
-        if exif:
-            self.exifCard.set_status(f"已安装：{exif}", True)
-        else:
-            self.exifCard.set_status("未安装", False)
+    @staticmethod
+    def _is_manual(path: Optional[str], custom: str) -> bool:
+        if not path or not custom or not os.path.isfile(custom):
+            return False
+        return os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(custom))
 
+    def _refresh_status(self) -> None:
+        custom_exif = qconfig.get(app_cfg.exiftoolPath)
+        exif = find_exiftool()
+        self.exifCard.clearAction.setEnabled(bool(custom_exif))
+        if exif:
+            text = tr("status_manual", path=exif) if self._is_manual(exif, custom_exif) else tr("status_installed", path=exif)
+            self.exifCard.set_status(text, True, cached_exiftool_install() is not None)
+        else:
+            extra = tr("status_manual_invalid") if custom_exif else ""
+            self.exifCard.set_status(tr("status_missing") + extra, False, cached_exiftool_install() is not None)
+
+        custom_dng = qconfig.get(app_cfg.dnglabPath)
         dng = find_dnglab()
+        self.dnglabCard.clearAction.setEnabled(bool(custom_dng))
         if dng:
-            self.dnglabCard.set_status(f"已安装：{dng}", True)
+            text = tr("status_manual", path=dng) if self._is_manual(dng, custom_dng) else tr("status_installed", path=dng)
+            self.dnglabCard.set_status(text, True, _cached_dnglab() is not None)
         else:
             adobe = find_adobe_dng_converter()
-            text = f"未安装（已检测到 Adobe DNG Converter：{adobe}）" if adobe else "未安装"
-            self.dnglabCard.set_status(text, False)
+            if custom_dng:
+                text = tr("status_manual_invalid_short")
+            elif adobe:
+                text = tr("status_adobe", path=adobe)
+            else:
+                text = tr("status_missing")
+            self.dnglabCard.set_status(text, False, _cached_dnglab() is not None)
 
     def _install_exiftool(self) -> None:
         if not self._ensure_idle():
@@ -712,6 +869,96 @@ class ToolsInterface(InterfaceBase):
         self._queue = None
         self._start_install("dnglab", install_dnglab)
 
+    def _pick_tool_path(self, title: str, env_name: str, item: ConfigItem, validator, filter_: str) -> None:
+        if not self._ensure_idle():
+            return
+        start = qconfig.get(item)
+        if start and not os.path.isdir(start):
+            start = os.path.dirname(start)
+        if not start or not os.path.isdir(start):
+            start = cache_dir()
+        path, _ = QFileDialog.getOpenFileName(self.window(), title, start, filter_)
+        if not path:
+            return
+        if not validator(path):
+            self._show_info(tr("msg_invalid_tool"), "error")
+            return
+        os.environ[env_name] = path
+        qconfig.set(item, path)
+        self._refresh_status()
+        self._show_info(tr("msg_manual_set", path=path), "success")
+
+    def _clear_tool_path(self, env_name: str, item: ConfigItem) -> None:
+        if not self._ensure_idle():
+            return
+        os.environ.pop(env_name, None)
+        qconfig.set(item, "")
+        self._refresh_status()
+        self._show_info(tr("msg_manual_cleared"), "success")
+
+    def _pick_exiftool_path(self) -> None:
+        file_filter = tr("file_filter_exec") if os.name == "nt" else tr("file_filter_all")
+        self._pick_tool_path(tr("dlg_pick_exif"), EXIFTOOL_ENV, app_cfg.exiftoolPath, is_valid_exiftool, file_filter)
+
+    def _pick_dnglab_path(self) -> None:
+        file_filter = tr("file_filter_exec") if os.name == "nt" else tr("file_filter_all")
+        self._pick_tool_path(tr("dlg_pick_dnglab"), DNGLAB_ENV, app_cfg.dnglabPath, is_valid_dnglab, file_filter)
+
+    def _clear_exiftool_path(self) -> None:
+        self._clear_tool_path(EXIFTOOL_ENV, app_cfg.exiftoolPath)
+
+    def _clear_dnglab_path(self) -> None:
+        self._clear_tool_path(DNGLAB_ENV, app_cfg.dnglabPath)
+
+    def _uninstall_exiftool(self) -> None:
+        if not self._ensure_idle():
+            return
+        target = cached_exiftool_install()
+        if target is None:
+            self._show_info(tr("msg_no_cached_exif"), "warning")
+            return
+        self._confirm_uninstall("ExifTool", target, uninstall_exiftool)
+
+    def _uninstall_dnglab(self) -> None:
+        if not self._ensure_idle():
+            return
+        target = _cached_dnglab()
+        if target is None:
+            self._show_info(tr("msg_no_cached_dnglab"), "warning")
+            return
+        self._confirm_uninstall("dnglab", target, uninstall_dnglab)
+
+    def _confirm_uninstall(self, name: str, target: str, fn) -> None:
+        box = MessageBox(tr("dlg_confirm_uninstall"), tr("dlg_confirm_uninstall_body", name=name, target=target), self.window())
+        box.yesButton.setText(tr("btn_uninstall"))
+        box.cancelButton.setText(tr("btn_cancel"))
+        if not box.exec():
+            return
+        self._start_uninstall(name, fn)
+
+    def _start_uninstall(self, name: str, fn) -> None:
+        self._set_running(True)
+        self.logBrowser.clear()
+        self.logBrowser.append(tr("log_uninstalling", name=name))
+        self._show_state(tr("state_uninstalling"), tr("state_uninstalling_content", name=name))
+        self._worker = Worker(fn)
+        self._worker.log_line.connect(self.logBrowser.append)
+        self._worker.finished.connect(lambda _r: self._on_uninstall_done(name))
+        self._worker.failed.connect(self._on_uninstall_failed)
+        self._worker.start()
+
+    def _on_uninstall_done(self, name: str) -> None:
+        self._set_running(False)
+        self._hide_state()
+        self._refresh_status()
+        self._show_info(tr("msg_uninstalled", name=name), "success")
+
+    def _on_uninstall_failed(self, exc: str) -> None:
+        self._set_running(False)
+        self._hide_state()
+        self._refresh_status()
+        self._show_info(exc, "error")
+
     def _install_all(self) -> None:
         if not self._ensure_idle():
             return
@@ -721,7 +968,7 @@ class ToolsInterface(InterfaceBase):
         if find_dnglab() is None:
             missing.append("dnglab")
         if not missing:
-            self._show_info("所有工具都已安装。", "success")
+            self._show_info(tr("msg_all_installed"), "success")
             return
         self._queue = missing
         self._start_next()
@@ -737,8 +984,8 @@ class ToolsInterface(InterfaceBase):
     def _start_install(self, name: str, fn) -> None:
         self._set_running(True)
         self.logBrowser.clear()
-        self.logBrowser.append(f"正在安装 {name}…")
-        self._show_state("正在安装", f"{name} 正在下载并安装到缓存目录…")
+        self.logBrowser.append(tr("log_installing", name=name))
+        self._show_state(tr("state_installing"), tr("state_installing_content", name=name))
         self._worker = Worker(fn)
         self._worker.log_line.connect(self.logBrowser.append)
         self._worker.finished.connect(lambda _r: self._on_install_done())
@@ -759,11 +1006,10 @@ class ToolsInterface(InterfaceBase):
         self._queue = None
         self._set_running(False)
         self._refresh_status()
-        if self._stateToolTip is not None:
-            self._stateToolTip.setContent("工具安装完成")
+        if self._stateToolTip is not None and shiboken6.isValid(self._stateToolTip):
+            self._stateToolTip.setContent(tr("state_install_done"))
             self._stateToolTip.setState(True)
-        QTimer.singleShot(2500, self._hide_state)
-        self._show_info("安装完成，请查看日志。", "success")
+        self._show_info(tr("msg_install_done"), "success")
 
 
 class MainWindow(MSFluentWindow):
@@ -776,25 +1022,47 @@ class MainWindow(MSFluentWindow):
         self.initWindow()
 
     def initNavigation(self) -> None:
-        self.addSubInterface(self.convertInterface, FluentIcon.PHOTO, "转换")
-        self.addSubInterface(self.toolsInterface, FluentIcon.CONNECT, "工具安装")
+        self.addSubInterface(self.convertInterface, FluentIcon.PHOTO, tr("nav_convert"))
+        self.addSubInterface(self.toolsInterface, FluentIcon.CONNECT, tr("nav_tools"))
         self.navigationInterface.addItem(
             routeKey="theme",
             icon=FluentIcon.CONSTRACT,
-            text="切换主题",
+            text=tr("nav_theme"),
             onClick=lambda: toggleTheme(True),
+            selectable=False,
+            position=NavigationItemPosition.BOTTOM,
+        )
+        self.navigationInterface.addItem(
+            routeKey="language",
+            icon=FluentIcon.LANGUAGE,
+            text=tr("nav_language"),
+            onClick=self._toggle_language,
             selectable=False,
             position=NavigationItemPosition.BOTTOM,
         )
         self.navigationInterface.addItem(
             routeKey="about",
             icon=FluentIcon.INFO,
-            text="关于",
+            text=tr("nav_about"),
             onClick=self._show_about,
             selectable=False,
             position=NavigationItemPosition.BOTTOM,
         )
+        nav = self.navigationInterface
         self.navigationInterface.setCurrentItem(self.convertInterface.objectName())
+
+    def _toggle_language(self) -> None:
+        t.toggle()
+        qconfig.set(app_cfg.language, t.lang)
+        self.convertInterface.apply_language()
+        self.toolsInterface.apply_language()
+        self.toolsInterface._refresh_status()
+        nav = self.navigationInterface
+        nav.widget(self.convertInterface.objectName()).setText(tr("nav_convert"))
+        nav.widget(self.toolsInterface.objectName()).setText(tr("nav_tools"))
+        nav.widget("theme").setText(tr("nav_theme"))
+        nav.widget("language").setText(tr("nav_language"))
+        nav.widget("about").setText(tr("nav_about"))
 
     def initWindow(self) -> None:
         self.resize(920, 780)
@@ -812,16 +1080,20 @@ class MainWindow(MSFluentWindow):
         self.move(w // 2 - self.width() // 2, h // 2 - self.height() // 2)
 
     def _show_about(self) -> None:
-        box = MessageBox(
-            APP_TITLE,
-            "把任意相机的 RAW/DNG 照片处理成 Lightroom 能识别的富士机型，"
-            "从而选出富士的胶片模拟。\n\n"
-            "转换前请确保已安装 exiftool，以及 dnglab 或 Adobe DNG Converter。",
-            self,
-        )
-        box.yesButton.setText("确定")
+        box = MessageBox(APP_TITLE, tr("about_content"), self)
+        box.yesButton.setText(tr("btn_ok"))
         box.cancelButton.hide()
         box.exec()
+
+
+def _apply_tool_overrides() -> None:
+    """Export persisted manual tool paths into the env the core looks up."""
+    for env_name, item in ((EXIFTOOL_ENV, app_cfg.exiftoolPath), (DNGLAB_ENV, app_cfg.dnglabPath)):
+        value = qconfig.get(item)
+        if value and os.path.isfile(value):
+            os.environ[env_name] = value
+        else:
+            os.environ.pop(env_name, None)
 
 
 def run_app(argv: Optional[List[str]] = None) -> int:
@@ -833,7 +1105,9 @@ def run_app(argv: Optional[List[str]] = None) -> int:
         os.path.expanduser("~"), ".config", "fujifilm-converter", "config.json"
     )
     os.makedirs(os.path.dirname(config_path), exist_ok=True)
-    qconfig.load(config_path)
+    qconfig.load(config_path, app_cfg)
+    _apply_tool_overrides()
+    t.set_language(qconfig.get(app_cfg.language))
 
     setTheme(Theme.AUTO)
     setThemeColor("#0078D4")
