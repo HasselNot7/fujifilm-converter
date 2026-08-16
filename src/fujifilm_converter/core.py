@@ -49,6 +49,7 @@ def process_file(
     make: Optional[str] = None,
     model: Optional[str] = None,
     uniquecameramodel: Optional[str] = None,
+    output_dir: Optional[str] = None,
 ) -> str:
     input_path = os.path.abspath(input_path)
     if not os.path.isfile(input_path):
@@ -70,7 +71,7 @@ def process_file(
             raise RuntimeError(
                 "No RAW to DNG converter found. Install Adobe DNG Converter or dnglab."
             )
-        dng_path = convert_raw_to_dng(raw_path, converter_type, converter_path)
+        dng_path = convert_raw_to_dng(raw_path, converter_type, converter_path, output_dir=output_dir)
         if archive_raw:
             archive_raw_file(raw_path, archive_dir_name=archive_dir)
     else:
@@ -99,6 +100,7 @@ def process_inputs(
     make: Optional[str] = None,
     model: Optional[str] = None,
     uniquecameramodel: Optional[str] = None,
+    output_dir: Optional[str] = None,
 ) -> list[str]:
     paths = collect_input_paths(inputs)
     if not paths:
@@ -117,6 +119,7 @@ def process_inputs(
                 make=make,
                 model=model,
                 uniquecameramodel=uniquecameramodel,
+                output_dir=output_dir,
             )
         )
     return results

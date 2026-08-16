@@ -14,9 +14,9 @@ import platform
 import sys
 from typing import List, Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QIcon
-from PySide6.QtWidgets import QApplication, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QMenu, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QAbstractItemView, QApplication, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QListWidgetItem, QMenu, QVBoxLayout, QWidget
 
 import shiboken6
 
@@ -55,6 +55,7 @@ from qfluentwidgets import (
     Theme,
 )
 
+from .. import log
 from ..cameras import list_presets
 from ..converters import (
     DNGLAB_ENV,
@@ -72,7 +73,7 @@ from ..converters import (
     uninstall_dnglab,
     uninstall_exiftool,
 )
-from ..core import collect_input_paths, process_inputs, print_status
+from ..core import collect_input_paths, process_file, print_status
 from .i18n import t, tr
 from .style import StyleSheet
 from .worker import Worker
@@ -171,24 +172,120 @@ class InterfaceBase(ScrollArea):
             tip.move(x, self.header.height() + 8)
 
 
+class ElidedLabel(QLabel):
+    """Single-line label that elides long paths in the middle."""
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(text, parent)
+        self._fullText = text
+
+    def setFullText(self, text: str) -> None:
+        self._fullText = text
+        self._updateElide()
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        self._updateElide()
+
+    def _updateElide(self) -> None:
+        width = max(40, self.width())
+        QLabel.setText(self, self.fontMetrics().elidedText(self._fullText, Qt.ElideMiddle, width))
+
+
+class FileItemWidget(QWidget):
+    """Row widget inside the input list: status badge + path + retry button."""
+
+    def __init__(self, path: str, status: str, on_retry, parent=None):
+        super().__init__(parent)
+        self.path = path
+        self.badge = InfoBadge.info("", self)
+        self.pathLabel = ElidedLabel(path, self)
+        self.pathLabel.setToolTip(path)
+        self.retryButton = PushButton(tr("btn_retry"), self)
+        self.retryButton.setFixedWidth(64)
+        self.retryButton.setVisible(False)
+        self.retryButton.clicked.connect(lambda: on_retry(path))
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(2, 2, 2, 2)
+        row.setSpacing(8)
+        row.addWidget(self.badge, 0, Qt.AlignVCenter)
+        row.addWidget(self.pathLabel, 1)
+        row.addWidget(self.retryButton, 0, Qt.AlignVCenter)
+
+        self.set_status(status)
+
+    def set_status(self, status: str) -> None:
+        self.status = status
+        old = self.layout().itemAt(0).widget()
+        if status == "success":
+            new = InfoBadge.success(tr("st_success"), self)
+        elif status == "failed":
+            new = InfoBadge.error(tr("st_failed"), self)
+        elif status == "processing":
+            new = InfoBadge.info(tr("st_processing"), self)
+        else:
+            new = InfoBadge.custom(tr("st_pending"), "#8a8a8a", "#8a8a8a", self)
+        self.badge = new
+        self.layout().replaceWidget(old, new)
+        old.deleteLater()
+        new.show()
+        self.retryButton.setVisible(status == "failed")
+        self.retryButton.setText(tr("btn_retry"))
+
+
+class DropListWidget(ListWidget):
+    """List that accepts file/folder drops and forwards them to a callback."""
+
+    def __init__(self, on_drop, parent=None):
+        super().__init__(parent)
+        self._onDrop = on_drop
+        self.setAcceptDrops(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+
+    def dragEnterEvent(self, e) -> None:
+        if e.mimeData().hasUrls():
+            e.acceptProposedAction()
+
+    def dragMoveEvent(self, e) -> None:
+        if e.mimeData().hasUrls():
+            e.acceptProposedAction()
+
+    def dropEvent(self, e) -> None:
+        if e.mimeData().hasUrls():
+            paths = [url.toLocalFile() for url in e.mimeData().urls() if url.isLocalFile()]
+            if paths:
+                self._onDrop(paths)
+            e.acceptProposedAction()
+        else:
+            super().dropEvent(e)
+
+
 class InputCard(HeaderCardWidget):
-    """Card for choosing RAW/DNG files or directories."""
+    """Card for choosing RAW/DNG files or directories. Supports drag & drop
+    and shows a per-file conversion status."""
+
+    retryRequested = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setBorderRadius(8)
 
         self.countBadge = InfoBadge.info(0, self)
-        self.listWidget = ListWidget(self)
+        self.listWidget = DropListWidget(self._add_paths, self)
         self.listPanel = QFrame(self)
         self.listPanel.setObjectName("listPanel")
         self.addFileButton = PushButton("", self, FluentIcon.DOCUMENT)
         self.addFolderButton = PushButton("", self, FluentIcon.FOLDER)
         self.removeButton = PushButton("", self)
         self.clearButton = PushButton("", self)
+        self.dropHint = CaptionLabel("", self)
+        self.dropHint.setTextColor(QColor(96, 96, 96), QColor(216, 216, 216))
+        self.dropHint.setAlignment(Qt.AlignCenter)
 
         panelLayout = QVBoxLayout(self.listPanel)
         panelLayout.setContentsMargins(2, 2, 2, 2)
+        panelLayout.setSpacing(2)
         panelLayout.addWidget(self.listWidget)
         self.listWidget.setMinimumHeight(160)
 
@@ -207,6 +304,7 @@ class InputCard(HeaderCardWidget):
         contentLayout.setContentsMargins(0, 0, 0, 0)
         contentLayout.setSpacing(12)
         contentLayout.addWidget(self.listPanel, 1)
+        contentLayout.addWidget(self.dropHint)
         contentLayout.addLayout(buttonLayout)
         self.viewLayout.addLayout(contentLayout, 1)
 
@@ -224,6 +322,12 @@ class InputCard(HeaderCardWidget):
         self.addFolderButton.setText(tr("btn_add_folder"))
         self.removeButton.setText(tr("btn_remove_selected"))
         self.clearButton.setText(tr("btn_clear"))
+        self.dropHint.setText(tr("hint_drop"))
+        for i in range(self.listWidget.count()):
+            item = self.listWidget.item(i)
+            widget = self.listWidget.itemWidget(item)
+            if isinstance(widget, FileItemWidget):
+                widget.set_status(widget.status)
 
     def _update_count(self) -> None:
         self.countBadge.setText(str(self.listWidget.count()))
@@ -255,17 +359,41 @@ class InputCard(HeaderCardWidget):
             self._add_paths([folder])
 
     def _add_paths(self, paths: List[str]) -> None:
-        existing = {self.listWidget.item(i).text() for i in range(self.listWidget.count())}
-        for path in paths:
+        try:
+            expanded = collect_input_paths(list(paths))
+        except (FileNotFoundError, RuntimeError):
+            expanded = []
+        existing = {self.listWidget.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.listWidget.count())}
+        for path in expanded:
             if path not in existing:
-                self.listWidget.addItem(path)
+                item = QListWidgetItem()
+                item.setData(Qt.ItemDataRole.UserRole, path)
+                widget = FileItemWidget(path, "pending", self.retryRequested.emit)
+                item.setSizeHint(widget.sizeHint())
+                self.listWidget.addItem(item)
+                self.listWidget.setItemWidget(item, widget)
 
     def _remove_selected(self) -> None:
         for item in self.listWidget.selectedItems():
             self.listWidget.takeItem(self.listWidget.row(item))
 
     def paths(self) -> List[str]:
-        return [self.listWidget.item(i).text() for i in range(self.listWidget.count())]
+        return [self.listWidget.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.listWidget.count())]
+
+    def set_file_status(self, path: str, status: str) -> None:
+        for i in range(self.listWidget.count()):
+            item = self.listWidget.item(i)
+            if os.path.normcase(item.data(Qt.ItemDataRole.UserRole)) == os.path.normcase(path):
+                widget = self.listWidget.itemWidget(item)
+                if isinstance(widget, FileItemWidget):
+                    widget.set_status(status)
+                return
+
+    def set_all_status(self, status: str) -> None:
+        for i in range(self.listWidget.count()):
+            widget = self.listWidget.itemWidget(self.listWidget.item(i))
+            if isinstance(widget, FileItemWidget):
+                widget.set_status(status)
 
 
 class CameraCard(HeaderCardWidget):
@@ -369,7 +497,11 @@ class OptionCard(HeaderCardWidget):
         self.archiveSwitch = SwitchButton(self)
         self.skipSwitch = SwitchButton(self)
         self.backupSwitch = SwitchButton(self)
+        self.outputSwitch = SwitchButton(self)
         self.archiveDirEdit = LineEdit(self)
+        self.outputBrowseButton = PushButton("", self, FluentIcon.FOLDER)
+        self.outputBrowseButton.setMinimumWidth(140)
+        self._outputDir = ""
 
         self.archiveSwitch.setChecked(True)
         self.archiveDirEdit.setText("originals")
@@ -381,12 +513,41 @@ class OptionCard(HeaderCardWidget):
         self._add_row("opt_archive", "opt_archive_desc", self.archiveSwitch, self.archiveDirEdit, "label_archive_dir")
         self._add_row("opt_skip", "opt_skip_desc", self.skipSwitch, None, None)
         self._add_row("opt_backup", "opt_backup_desc", self.backupSwitch, None, None)
+        self._add_row("opt_output", "opt_output_desc", self.outputSwitch, self.outputBrowseButton, None)
 
         self.archiveSwitch.checkedChanged.connect(self.archiveDirEdit.setEnabled)
         self.archiveDirEdit.setEnabled(self.archiveSwitch.isChecked())
+        self.outputSwitch.checkedChanged.connect(self.outputBrowseButton.setEnabled)
+        self.outputBrowseButton.setEnabled(False)
+        self.outputBrowseButton.clicked.connect(self._pick_output_dir)
         self.apply_language()
 
-    def _add_row(self, titleKey: str, descKey: str, switch: SwitchButton, extra: Optional[LineEdit], extraLabelKey: Optional[str]) -> None:
+    def _pick_output_dir(self) -> None:
+        start_dir = self._outputDir or qconfig.get(app_cfg.lastDialogDir) or ""
+        if start_dir and not os.path.isdir(start_dir):
+            start_dir = ""
+        folder = QFileDialog.getExistingDirectory(self.window(), tr("dlg_output_dir"), start_dir)
+        if folder:
+            self._outputDir = folder
+            self.outputSwitch.setChecked(True)
+            qconfig.set(app_cfg.lastDialogDir, folder)
+            self._update_output_button()
+
+    def _update_output_button(self) -> None:
+        if self._outputDir:
+            fm = self.outputBrowseButton.fontMetrics()
+            self.outputBrowseButton.setText(fm.elidedText(self._outputDir, Qt.ElideMiddle, 240))
+            self.outputBrowseButton.setToolTip(self._outputDir)
+        else:
+            self.outputBrowseButton.setText(tr("btn_browse"))
+            self.outputBrowseButton.setToolTip("")
+
+    def output_dir(self) -> Optional[str]:
+        if not self.outputSwitch.isChecked():
+            return None
+        return self._outputDir or None
+
+    def _add_row(self, titleKey: str, descKey: str, switch: SwitchButton, extra: Optional[QWidget], extraLabelKey: Optional[str]) -> None:
         labelLayout = QVBoxLayout()
         labelLayout.setContentsMargins(0, 0, 0, 0)
         labelLayout.setSpacing(2)
@@ -402,9 +563,10 @@ class OptionCard(HeaderCardWidget):
         row.setSpacing(12)
         row.addLayout(labelLayout, 1)
         extraLabel = None
-        if extra is not None and extraLabelKey:
-            extraLabel = CaptionLabel(tr(extraLabelKey), self)
-            row.addWidget(extraLabel)
+        if extra is not None:
+            if extraLabelKey:
+                extraLabel = CaptionLabel(tr(extraLabelKey), self)
+                row.addWidget(extraLabel)
             row.addWidget(extra)
         row.addWidget(switch)
 
@@ -424,6 +586,32 @@ class OptionCard(HeaderCardWidget):
             descLabel.setText(tr(descKey))
             if extraLabel is not None:
                 extraLabel.setText(tr(extraLabelKey))
+        self._update_output_button()
+
+
+class ConvertWorker(Worker):
+    """Runs the conversion file-by-file and reports each file's result."""
+
+    file_done = Signal(str, bool, str)
+
+    def __init__(self, files: List[str], opts: dict):
+        super().__init__(self._run)
+        self._files = files
+        self._opts = opts
+
+    def _run(self) -> List[tuple]:
+        results: List[tuple] = []
+        for path in self._files:
+            try:
+                process_file(path, **self._opts)
+                self.file_done.emit(path, True, "")
+                results.append((path, True, ""))
+            except Exception as exc:
+                msg = str(exc)
+                log.info(f"Error: {msg}")
+                self.file_done.emit(path, False, msg)
+                results.append((path, False, msg))
+        return results
 
 
 class ConvertInterface(InterfaceBase):
@@ -469,12 +657,14 @@ class ConvertInterface(InterfaceBase):
 
         self.checkButton.clicked.connect(self._check_tools)
         self.startButton.clicked.connect(self._start)
+        self.inputCard.retryRequested.connect(self._retry_file)
 
         self._worker: Optional[Worker] = None
         self._check_mode = False
         self._total = 0
         self._done = 0
         self._stateToolTip: Optional[StateToolTip] = None
+        self._last_opts: dict = {}
 
         self.apply_language()
 
@@ -545,6 +735,19 @@ class ConvertInterface(InterfaceBase):
             return None
         return preset, make, model, ucm, files
 
+    def _build_opts(self, preset, make, model, ucm) -> dict:
+        return dict(
+            preset=preset,
+            archive_raw=self.optionCard.archiveSwitch.isChecked(),
+            skip_raw_conversion=self.optionCard.skipSwitch.isChecked(),
+            archive_dir=self.optionCard.archiveDirEdit.text().strip() or "originals",
+            keep_exif_backup=self.optionCard.backupSwitch.isChecked(),
+            make=make,
+            model=model,
+            uniquecameramodel=ucm,
+            output_dir=self.optionCard.output_dir(),
+        )
+
     def _start(self) -> None:
         if self._worker and self._worker.isRunning():
             return
@@ -556,22 +759,30 @@ class ConvertInterface(InterfaceBase):
         self._total = len(files)
         self._check_mode = False
         self._set_running(True)
+        self._last_opts = self._build_opts(preset, make, model, ucm)
+        self.inputCard.set_all_status("pending")
         self.logBrowser.clear()
         self.logBrowser.append(tr("log_found_files", n=self._total))
         self._show_state(tr("state_converting"), tr("log_found_files", n=self._total))
 
-        self._worker = Worker(
-            process_inputs,
-            files,
-            preset=preset,
-            archive_raw=self.optionCard.archiveSwitch.isChecked(),
-            skip_raw_conversion=self.optionCard.skipSwitch.isChecked(),
-            archive_dir=self.optionCard.archiveDirEdit.text().strip() or "originals",
-            keep_exif_backup=self.optionCard.backupSwitch.isChecked(),
-            make=make,
-            model=model,
-            uniquecameramodel=ucm,
-        )
+        self._worker = ConvertWorker(files, self._last_opts)
+        self._connect_worker()
+
+    def _retry_file(self, path: str) -> None:
+        if self._worker and self._worker.isRunning():
+            self._show_info(tr("warn_busy"), "warning")
+            return
+        preset, make, model, ucm = self._camera_args()
+        opts = self._last_opts or self._build_opts(preset, make, model, ucm)
+        self._last_opts = opts
+        self._total = 1
+        self._check_mode = False
+        self._set_running(True)
+        self.inputCard.set_file_status(path, "processing")
+        self.logBrowser.append(tr("log_retry", path=path))
+        self._show_state(tr("state_converting"), tr("log_retry", path=path))
+
+        self._worker = ConvertWorker([path], opts)
         self._connect_worker()
 
     def _check_tools(self) -> None:
@@ -590,11 +801,16 @@ class ConvertInterface(InterfaceBase):
         self._worker.log_line.connect(self._on_log_line)
         self._worker.finished.connect(self._on_finished)
         self._worker.failed.connect(self._on_failed)
+        if isinstance(self._worker, ConvertWorker):
+            self._worker.file_done.connect(self._on_file_done)
         self._worker.start()
 
     def _on_log_line(self, msg: str) -> None:
         self.logBrowser.append(msg)
-        if self._total and msg.startswith("Done: "):
+
+    def _on_file_done(self, path: str, ok: bool, error: str) -> None:
+        self.inputCard.set_file_status(path, "success" if ok else "failed")
+        if not self._check_mode:
             self._done += 1
             self.progressBar.setValue(int(self._done * 100 / self._total))
             if self._stateToolTip is not None:
@@ -606,13 +822,18 @@ class ConvertInterface(InterfaceBase):
             self._hide_state()
             self._show_info(tr("msg_check_done"), "success")
             return
-        count = len(result) if isinstance(result, list) else self._done
+        if isinstance(result, list) and result and isinstance(result[0], tuple):
+            ok = sum(1 for r in result if r[1])
+            fail = len(result) - ok
+        else:
+            ok, fail = self._done, 0
         self.progressBar.setValue(100)
-        self.logBrowser.append(tr("log_done", n=count))
+        summary = tr("msg_convert_summary", ok=ok, fail=fail)
+        self.logBrowser.append(summary)
         if self._stateToolTip is not None and shiboken6.isValid(self._stateToolTip):
-            self._stateToolTip.setContent(tr("state_done_content", n=count))
+            self._stateToolTip.setContent(summary)
             self._stateToolTip.setState(True)
-        self._show_info(tr("log_done", n=count), "success")
+        self._show_info(summary, "success" if fail == 0 else "warning")
 
     def _on_failed(self, exc: str) -> None:
         self._set_running(False)

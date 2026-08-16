@@ -509,9 +509,15 @@ def find_converted_dng(raw_path: str) -> Optional[str]:
     return None
 
 
-def convert_raw_to_dng(raw_path: str, converter_type: str, converter_path: str) -> str:
-    output_dir = os.path.dirname(os.path.abspath(raw_path))
-    expected = expected_dng_path(raw_path)
+def convert_raw_to_dng(raw_path: str, converter_type: str, converter_path: str, output_dir: Optional[str] = None) -> str:
+    if output_dir:
+        output_dir = os.path.abspath(output_dir)
+        os.makedirs(output_dir, exist_ok=True)
+    else:
+        output_dir = os.path.dirname(os.path.abspath(raw_path))
+
+    base = os.path.splitext(os.path.basename(raw_path))[0]
+    expected = os.path.join(output_dir, base + ".dng")
 
     if converter_type == "adobe":
         run_command(
@@ -526,6 +532,8 @@ def convert_raw_to_dng(raw_path: str, converter_type: str, converter_path: str) 
     else:
         raise RuntimeError("No RAW to DNG converter found")
 
+    if os.path.isfile(expected):
+        return expected
     dng_path = find_converted_dng(raw_path)
     if not dng_path:
         raise RuntimeError(f"DNG output not found for {raw_path}")
