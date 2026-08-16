@@ -25,7 +25,7 @@ fuji-convert ./photos/  # ./photos/ 是存放 RAW 格式照片的目录
 
 ### 2. 桌面 GUI（PySide6）
 
-适合不想敲命令行的用户。界面为 Fluent 风格，可以直观地选择文件/文件夹、切换预设、勾选归档选项，并实时查看转换日志。
+适合不想敲命令行的用户。界面为 Fluent 风格，可以直观地选择文件/文件夹、切换预设、勾选归档选项，并实时查看转换日志。左侧导航里的「工具安装」页面还能一键自动安装 exiftool 和 dnglab（Windows/macOS 会自动下载便携版到用户缓存目录，无需管理员权限）。
 
 ```sh
 python3 -m pip install -e ".[gui]"   # 额外安装 PySide6 + PySide6-Fluent-Widgets

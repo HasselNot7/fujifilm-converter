@@ -1,0 +1,33 @@
+#convertInterface,
+#view {
+    background-color: transparent;
+}
+
+QScrollArea {
+    border: none;
+}
+
+#pageHeader CaptionLabel {
+    color: rgb(210, 210, 210);
+}
+
+#listPanel {
+    background-color: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 10px;
+}
+
+#listPanel QListView {
+    background-color: transparent;
+    border: none;
+}
+
+#logBrowser {
+    background-color: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 10px;
+    padding: 8px;
+    font-family: 'Cascadia Code', 'Consolas', 'Courier New';
+    font-size: 12px;
+    color: rgb(215, 215, 215);
+}

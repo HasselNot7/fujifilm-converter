@@ -28,7 +28,7 @@ fuji-convert --no-archive-raw ./photos/  # ./photos/ is the directory containing
 
 ### 2. Desktop GUI (PySide6)
 
-For users who prefer a graphical interface. The Fluent-style app lets you pick files/folders, switch presets, toggle archiving options, and watch the conversion log live.
+For users who prefer a graphical interface. The Fluent-style app lets you pick files/folders, switch presets, toggle archiving options, and watch the conversion log live. The "Install tools" page can also install exiftool and dnglab with one click (Windows/macOS download portable binaries into a per-user cache directory, no admin rights needed).
 
 ```sh
 python3 -m pip install -e ".[gui]"   # also installs PySide6 + PySide6-Fluent-Widgets
