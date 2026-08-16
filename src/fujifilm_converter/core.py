@@ -20,6 +20,7 @@ from .converters import (
 from .archiving import archive_raw_file
 from .exif import update_exif
 from .cameras import list_presets
+from . import log
 
 
 def collect_input_paths(inputs: list[str]) -> list[str]:
@@ -84,7 +85,7 @@ def process_file(
         uniquecameramodel=uniquecameramodel,
         keep_exif_backup=keep_exif_backup,
     )
-    print(f"Done: {dng_path}")
+    log.info(f"Done: {dng_path}")
     return dng_path
 
 

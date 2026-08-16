@@ -6,7 +6,7 @@ Patch RAW/DNG photos so Lightroom recognizes them as a Fujifilm camera and expos
 
 The tool converts RAW files to DNG, then writes the camera identity into the DNG metadata. It does not recreate an in-camera Fujifilm JPEG; it only unlocks the matching Lightroom profile choices when those profiles are available.
 
-## Three Ways To Use It
+## Four Ways To Use It
 
 ### 1. Local CLI
 
@@ -26,7 +26,16 @@ To keep original RAW files in place:
 fuji-convert --no-archive-raw ./photos/  # ./photos/ is the directory containing RAW photos
 ```
 
-### 2. Docker
+### 2. Desktop GUI (PySide6)
+
+For users who prefer a graphical interface. The Fluent-style app lets you pick files/folders, switch presets, toggle archiving options, and watch the conversion log live.
+
+```sh
+python3 -m pip install -e ".[gui]"   # also installs PySide6 + PySide6-Fluent-Widgets
+fuji-convert-gui                      # launch the GUI (or python -m fujifilm_converter.gui)
+```
+
+### 3. Docker
 
 Use this if you do not want to install Python dependencies on the host. The image includes ExifTool and dnglab.
 
@@ -35,7 +44,7 @@ docker build -t fujifilm-converter .
 docker run --rm -v "$PWD":/data -w /data fujifilm-converter ./photos/  # ./photos/ is the directory containing RAW photos
 ```
 
-### 3. Agent Skill
+### 4. Agent Skill
 
 If you only need Fujifilm film simulations and want a workflow that never moves, overwrites, or edits source files, use the dedicated Skill repository:
 
@@ -59,6 +68,7 @@ The Skill writes results to `fujifilm-ready/` and creates `report.json` plus `RE
 fuji-convert --check
 fuji-convert --list-presets
 fuji-convert ./photos/  # ./photos/ is the directory containing RAW photos
+fuji-convert-gui        # launch the desktop GUI
 ```
 
 The main workflow is Fujifilm film simulations. Do not assume EXIF changes can unlock every other brand's profiles; some brands have extra Lightroom-side checks.
@@ -76,6 +86,7 @@ The main workflow is Fujifilm film simulations. Do not assume EXIF changes can u
 - [ExifTool](https://exiftool.org/)
 - Adobe DNG Converter or [dnglab](https://github.com/dnglab/dnglab) for RAW-to-DNG conversion
 - Lightroom / Camera Raw with the relevant Fujifilm Camera Matching profiles installed
+- For the desktop GUI: PySide6 + PySide6-Fluent-Widgets (installed automatically via `pip install -e ".[gui]"`)
 
 ## Notes
 

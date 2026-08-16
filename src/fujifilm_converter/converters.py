@@ -16,6 +16,8 @@ import urllib.request
 import zipfile
 from typing import Tuple, Optional
 
+from . import log
+
 RAW_EXTENSIONS = {
     "arw", "cr2", "cr3", "nef", "nrw", "raf", "orf", "rw2", "pef", "srw",
     "dng", "raw", "rwl", "3fr", "iiq", "mef", "mrw", "erf", "kdc", "dcr", "gpr",
@@ -99,7 +101,7 @@ def _ensure_dnglab() -> Optional[str]:
     else:
         return None
 
-    print("dnglab not found, downloading portable binary...")
+    log.info("dnglab not found, downloading portable binary...")
     try:
         api_url = "https://api.github.com/repos/dnglab/dnglab/releases/latest"
         with urllib.request.urlopen(api_url, timeout=30) as resp:
@@ -112,7 +114,7 @@ def _ensure_dnglab() -> Optional[str]:
                 break
 
         if not download_url:
-            print("Could not find matching dnglab asset for this platform.")
+            log.info("Could not find matching dnglab asset for this platform.")
             return None
 
         download_path = os.path.join(cache_dir, download_name)
@@ -136,10 +138,10 @@ def _ensure_dnglab() -> Optional[str]:
             os.rename(download_path, bin_path)
 
         os.chmod(bin_path, 0o755)
-        print(f"Downloaded dnglab to {bin_path}")
+        log.info(f"Downloaded dnglab to {bin_path}")
         return bin_path
     except Exception as e:
-        print(f"Failed to auto-download dnglab: {e}")
+        log.info(f"Failed to auto-download dnglab: {e}")
         return None
 
 
@@ -149,12 +151,22 @@ def ensure_dir(path: str) -> None:
 
 
 def run_command(command: list[str], label: str) -> subprocess.CompletedProcess:
-    """Run a command, print what we are doing, raise on failure."""
-    print(f"[{label}] {' '.join(command)}")
-    result = subprocess.run(command, check=False)
-    if result.returncode != 0:
-        raise RuntimeError(f"{label} failed with exit code {result.returncode}")
-    return result
+    """Run a command, stream its output through log.info, raise on failure."""
+    log.info(f"[{label}] {' '.join(command)}")
+    proc = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+    )
+    for line in proc.stdout:
+        log.info(line.rstrip("\r\n"))
+    proc.wait()
+    if proc.returncode != 0:
+        raise RuntimeError(f"{label} failed with exit code {proc.returncode}")
+    return subprocess.CompletedProcess(command, proc.returncode)
 
 
 def expected_dng_path(raw_path: str) -> str:
@@ -196,8 +208,8 @@ def convert_raw_to_dng(raw_path: str, converter_type: str, converter_path: str) 
 def print_converter_status() -> None:
     converter_type, converter_path = find_dng_converter()
     exiftool = find_executable("exiftool")
-    print(f"exiftool: {'found' if exiftool else 'missing (install from https://exiftool.org/ or brew/apt)'}")
+    log.info(f"exiftool: {'found' if exiftool else 'missing (install from https://exiftool.org/ or brew/apt)'}")
     if converter_path:
-        print(f"RAW converter: {converter_type} ({converter_path})")
+        log.info(f"RAW converter: {converter_type} ({converter_path})")
     else:
-        print("RAW converter: missing (will try to auto-download dnglab; or install Adobe DNG Converter)")
+        log.info("RAW converter: missing (will try to auto-download dnglab; or install Adobe DNG Converter)")

@@ -15,6 +15,7 @@ from typing import Iterable, Optional
 from .converters import find_executable, run_command
 from .archiving import archive_exif_backup
 from .cameras import get_camera, format_camera_info
+from . import log
 
 
 def update_exif(
@@ -38,7 +39,7 @@ def update_exif(
     if not exiftool:
         raise RuntimeError("exiftool not found. Install it from https://exiftool.org/")
 
-    print(f"[EXIF] Using camera: {format_camera_info(cam)}")
+    log.info(f"[EXIF] Using camera: {format_camera_info(cam)}")
 
     command: list[str] = [
         exiftool,

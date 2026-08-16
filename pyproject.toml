@@ -32,6 +32,11 @@ classifiers = [
 [project.scripts]
 fuji-convert = "fujifilm_converter.cli:main"
 fujifilm-convert = "fujifilm_converter.cli:main"  # also available as the fuller name
+fuji-convert-gui = "fujifilm_converter.gui.app:main"
+fujifilm-convert-gui = "fujifilm_converter.gui.app:main"  # also available as the fuller name
+
+[project.optional-dependencies]
+gui = ["PySide6>=6.5", "PySide6-Fluent-Widgets>=1.5.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

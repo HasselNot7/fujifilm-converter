@@ -21,6 +21,7 @@ import os
 import shutil
 
 from .converters import ensure_dir
+from . import log
 
 
 def archive_raw_file(
@@ -38,7 +39,7 @@ def archive_raw_file(
         raise RuntimeError(f"Archive file already exists: {archive_path}")
 
     shutil.move(raw_path, archive_path)
-    print(f"Archived RAW: {raw_path} -> {archive_path}")
+    log.info(f"Archived RAW: {raw_path} -> {archive_path}")
     return archive_path
 
 
@@ -63,4 +64,4 @@ def archive_exif_backup(
             archive_file = filename.replace(f".{extension}_original", f".{extension}")
             archive_path = os.path.join(archive_dir, archive_file)
             shutil.move(original_path, archive_path)
-            print(f"Archived EXIF backup: {original_path} -> {archive_path}")
+            log.info(f"Archived EXIF backup: {original_path} -> {archive_path}")

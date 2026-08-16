@@ -8,6 +8,10 @@
 
 # After that you get the `fuji-convert` command globally (when in venv or via pipx).
 
+# To also install the PySide6 desktop GUI:
+#   pip install -e ".[gui]"
+#   # after that you get the `fuji-convert-gui` command (or: python -m fujifilm_converter.gui)
+
 # System dependencies you still need (see README for easy one-liners):
 #   - exiftool (required)
 #   - dnglab (recommended for cross-platform RAW->DNG) or Adobe DNG Converter
